@@ -1,0 +1,2203 @@
+import { createFileRoute, Link, notFound, useNavigate } from "@tanstack/react-router";
+import { useOmni } from "@/lib/omni-store";
+import {
+  ETAPAS, FUNIS, HISTORICO, brl, getCliente, getColaborador, getEtapa, maskCpfCnpj,
+} from "@/lib/mock-data";
+import { cn } from "@/lib/utils";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar as CalendarPicker } from "@/components/ui/calendar";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import {
+  ArrowLeft, Banknote, Hash, Building2, Calendar, Clock, Copy, FileSignature,
+  AlertTriangle, Fingerprint, MessageSquare, History, Printer, FileText, ChevronRight,
+  Download, LifeBuoy, ArrowRightCircle, Pencil, Save, RefreshCw, Eye, Undo2, X,
+  Plus, Trash2, CopyPlus, CheckCircle2, XCircle, AlertCircle, LifeBuoy as Headphones, Info,
+} from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { ErrosPedido } from "@/components/erros-pedido";
+
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { toast } from "sonner";
+import { gerarNotaPDF } from "@/lib/pdf-nota";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/lib/auth";
+import { useColaboradoresDB, useCatalogo } from "@/lib/catalogos";
+
+
+export const Route = createFileRoute("/_shell/vendas/$id")({
+  component: VendaDetalhePage,
+  validateSearch: (search: Record<string, unknown>) => ({
+    suporte: search.suporte === 1 || search.suporte === "1" ? 1 : undefined,
+    etapaSuporte: typeof search.etapaSuporte === "string" ? search.etapaSuporte : undefined,
+    clienteId: typeof search.clienteId === "string" ? search.clienteId : undefined,
+  } as { suporte?: number; etapaSuporte?: string; clienteId?: string }),
+});
+
+function VendaDetalhePage() {
+  const { id } = Route.useParams();
+  const { vendas, moveVenda, updateVenda, reloadFromDb, loaded } = useOmni();
+  const navigate = useNavigate();
+  const { user, profile, roles } = useAuth();
+  const { data: colabsDB } = useColaboradoresDB();
+  const { data: colabsAll } = useColaboradoresDB();
+  const { data: produtosCat } = useCatalogo("produtos_catalogo", (vendas.find(v => v.id === id))?.operadora ?? "CLARO");
+  const { data: tiposCat } = useCatalogo("tipos_pedido_catalogo", (vendas.find(v => v.id === id))?.operadora ?? "CLARO");
+  const { data: statusCat } = useCatalogo("status_catalogo", (vendas.find(v => v.id === id))?.operadora ?? "CLARO");
+  
+  const venda = useMemo(() => vendas.find(v => v.id === id), [vendas, id]);
+
+  const [historicoDb, setHistoricoDb] = useState<any[]>([]);
+  useEffect(() => {
+    if (!venda?.id) return;
+    (async () => {
+      const { data } = await supabase
+        .from("venda_historico")
+        .select("id, created_at, tipo, campo, valor_anterior, valor_novo, descricao, user_nome")
+        .eq("venda_id", venda.id)
+        .order("created_at", { ascending: false });
+      setHistoricoDb((data ?? []) as any[]);
+    })();
+  }, [venda?.id, vendas]);
+
+
+  if (!venda) {
+    if (!loaded) {
+      return (
+        <div className="flex items-center justify-center min-h-[60vh] text-muted-foreground">
+          Carregando venda…
+        </div>
+      );
+    }
+    throw notFound();
+  }
+
+  // colabsDB já definido acima
+  const clienteMock = getCliente(venda.clienteId);
+  const cliente = clienteMock ?? {
+    id: venda.clienteId,
+    razaoSocial: venda.clienteRazaoSocial ?? "—",
+    cnpj: venda.clienteCnpj ?? "",
+    uf: venda.clienteUf ?? "—",
+    ddd: "",
+    operadoras: [venda.operadora],
+    contato: venda.clienteContato ?? "—",
+    telefone: venda.clienteTelefone ?? "—",
+    email: venda.clienteEmail ?? "—",
+    totalLinhas: venda.quantidadeLinhas,
+    receitaMensal: venda.receita,
+  };
+  const colabReal = venda.consultorColabId
+    ? colabsDB.find(c => c.id === venda.consultorColabId)
+    : colabsDB.find(c => c.user_id === venda.consultorId);
+  const consultor = colabReal
+    ? {
+        id: colabReal.id,
+        nome: colabReal.nome_exibicao,
+        iniciais: colabReal.nome_exibicao.split(/\s+/).slice(0, 2).map(p => p[0] ?? "").join("").toUpperCase(),
+        funcao: colabReal.funcao,
+      }
+    : (venda.consultorNome
+        ? { id: "", nome: venda.consultorNome, iniciais: venda.consultorNome.split(/\s+/).slice(0,2).map(p=>p[0]??"").join("").toUpperCase(), funcao: null }
+        : getColaborador(venda.consultorId));
+  const bko = venda.bkoId ? getColaborador(venda.bkoId) : null;
+
+  const etapa = getEtapa(venda.etapaId);
+  const funilNome = FUNIS.find(f => f.id === venda.funil)?.nome ?? "—";
+  const operadoraCor = venda.operadora === "CLARO" ? "claro" : "vivo";
+
+  const historicoLegacy = HISTORICO.filter(h => h.vendaId === venda.id);
+
+  // Transições de funil
+  const podeVirarVenda = venda.etapaId === "p-proposta";
+  const podeEnviarAssinatura = venda.etapaId === "f-contrato";
+  const jaEmSuporte = venda.funil === "suporte";
+
+  // Hooks search e suporte*
+  const { suporte: suporteSearch, etapaSuporte, clienteId: clienteIdSearch } = Route.useSearch();
+  const [suporteOpen, setSuporteOpen] = useState(Boolean(suporteSearch));
+  const [suporteEtapa, setSuporteEtapa] = useState(etapaSuporte ?? "s-espera");
+  const [suporteMotivo, setSuporteMotivo] = useState("");
+  const [suporteSaving, setSuporteSaving] = useState(false);
+  const [confirmAcao, setConfirmAcao] = useState<null | "virar" | "assinar" | "excluir">(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [form, setForm] = useState<Record<string, any>>({});
+
+  useEffect(() => {
+    if (id === "nova" && clienteIdSearch) {
+      setForm(prev => ({ ...prev, clienteId: clienteIdSearch }));
+      (async () => {
+        const { data } = await supabase.from("clientes").select("*").eq("id", clienteIdSearch).maybeSingle();
+        if (data) {
+          setForm(prev => ({
+            ...prev,
+            clienteRazaoSocial: data.razao_social,
+            clienteCnpj: data.cnpj_cpf,
+            clienteUf: data.uf,
+            clienteContato: data.contato || "",
+            clienteTelefone: data.telefone || "",
+            clienteEmail: data.email || "",
+            operadora: (data.operadoras?.[0] as any) || "CLARO",
+          }));
+        }
+      })();
+      setEditOpen(true);
+    }
+  }, [id, clienteIdSearch]);
+
+  // Edição da venda
+  const isBKO = roles.includes("bko");
+  const isAdmin = roles.includes("admin");
+  const isGestor = roles.includes("gestor");
+  
+  const isAdminGestor = isAdmin || isGestor;
+  const isDono = venda.consultorId === user?.id || (venda as any).created_by === user?.id;
+  const concluida = venda.etapaId?.toLowerCase().includes("conclu") || String(venda.funil) === "concluido";
+  const podeEditar = isAdminGestor || (isDono && !concluida);
+  const podeEditarDatas = isAdmin || isGestor || isBKO;
+
+  const bkos = useMemo(() => colabsAll.filter(c => (c.funcao ?? "").toLowerCase().includes("bko")), [colabsAll]);
+
+  function abrirEdicao() {
+    setForm({
+      valor: venda!.receita,
+      quantidade_linhas: venda!.quantidadeLinhas,
+      tipo_pedido: venda!.tipoPedido,
+      produto: venda!.produto,
+      status: venda!.status,
+      funil: venda!.funil,
+      etapa_id: venda!.etapaId,
+      bko_colab_id: (venda as any).bkoColabId ?? null,
+      sla_status: venda!.slaStatus,
+      data_recebimento: venda!.dataRecebimento,
+      data_preenchimento: venda!.dataPreenchimento ?? "",
+      data_envio: venda!.dataEnvio ?? "",
+      data_aceite: venda!.dataAceite ?? "",
+      data_input: venda!.dataInput ?? "",
+      data_ativacao: venda!.dataAtivacao ?? "",
+      data_portabilidade: (venda as any).dataPortabilidade ?? "",
+      data_entrega: (venda as any).dataEntrega ?? "",
+      proxima_acao: venda!.proximaAcao,
+      proxima_acao_data: venda!.proximaAcaoData,
+      observacao: venda!.observacao ?? "",
+      cliente_contato: venda!.clienteContato ?? "",
+      cliente_telefone: venda!.clienteTelefone ?? "",
+      cliente_email: venda!.clienteEmail ?? "",
+      cliente_uf: venda!.clienteUf ?? "",
+      status_portabilidade: (venda as any).statusPortabilidade ?? "",
+      status_biometria: (venda as any).statusBiometria ?? "",
+      nota_fiscal: (venda as any).notaFiscal ?? "",
+      cod_rastreio: (venda as any).codRastreio ?? "",
+      equipamentos: (venda as any).equipamentos ?? "",
+    });
+    setEditOpen(true);
+  }
+  async function salvarEdicao() {
+    setEditSaving(true);
+    // Normaliza datas vazias -> null
+    const patch: Record<string, any> = {};
+    Object.entries(form).forEach(([k, v]) => {
+      if (v === "" || v === undefined) patch[k] = null;
+      else patch[k] = v;
+    });
+    // garante coerência funil/etapa
+    const etapaSel = ETAPAS.find(e => e.id === patch.etapa_id);
+    if (etapaSel) patch.funil = etapaSel.funil;
+    patch.valor = Number(patch.valor) || 0;
+    patch.quantidade_linhas = Number(patch.quantidade_linhas) || 0;
+    
+    // Atualiza metadados de última alteração
+    patch.status_pedido_user_id = user?.id;
+    const userRole = roles[0] || "consultor";
+    patch.status_pedido_user_nome = `${profile?.nome_completo ?? user?.email ?? "Sistema"} (${userRole})`;
+    patch.status_pedido_em = new Date().toISOString();
+
+    const ok = await updateVenda(venda!.id, patch);
+    setEditSaving(false);
+    if (ok) setEditOpen(false);
+  }
+
+  const podeTransicionar = roles.some(r => r === "admin" || r === "gestor" || r === "consultor");
+
+  function baixarPDF() {
+    const doc = gerarNotaPDF(venda!, cliente, consultor?.nome, etapa?.nome);
+    doc.save(`OMNI-${venda!.numero}.pdf`);
+    toast.success("PDF gerado");
+  }
+  function preverPDF() {
+    const doc = gerarNotaPDF(venda!, cliente, consultor?.nome, etapa?.nome);
+    window.open(doc.output("bloburl"), "_blank");
+  }
+
+  async function logHistorico(descricao: string) {
+    if (!user) return;
+    await supabase.from("venda_historico").insert({
+      venda_id: venda!.id,
+      tipo: "observacao",
+      descricao,
+      user_id: user.id,
+      user_nome: profile?.nome_completo ?? user.email ?? null,
+    });
+  }
+
+  async function virarVenda() {
+    moveVenda(venda!.id, "f-proposta");
+    await logHistorico("Prospecção → Follow Up (Virar Venda)");
+    toast.success("Venda movida para Follow Up");
+  }
+
+  async function enviarAssinatura() {
+    // Agora envia para o novo funil PROCESSOS BKO (Pendente Consultor) primeiro
+    moveVenda(venda!.id, "bko-pendente");
+    // O log específico solicitado com detalhes
+    const userRole = roles[0] || "consultor";
+    const userName = profile?.nome_completo ?? user?.email ?? "Sistema";
+    await logHistorico(`Pedido movimentado para PROCESSOS BKO
+Usuário: ${userName}
+Perfil: ${userRole}
+Funil anterior: ${FUNIS.find(f => f.id === venda!.funil)?.nome}
+Etapa anterior: ${getEtapa(venda!.etapaId)?.nome}
+Funil atual: Processos BKO
+Etapa atual: Pendente Consultor
+Data/hora: automático`);
+    toast.success("Pedido enviado para Processos BKO");
+  }
+
+  async function confirmarSuporte() {
+    if (!suporteMotivo.trim()) {
+      toast.error("Descreva o motivo do envio para Suporte");
+      return;
+    }
+    setSuporteSaving(true);
+    moveVenda(venda!.id, suporteEtapa);
+    await logHistorico(
+      `Enviado para Suporte (${ETAPAS.find(e => e.id === suporteEtapa)?.nome ?? suporteEtapa}): ${suporteMotivo.trim()}`,
+    );
+    setSuporteSaving(false);
+    setSuporteOpen(false);
+    setSuporteMotivo("");
+    toast.success("Pedido enviado para Suporte");
+    await reloadFromDb();
+  }
+
+
+  return (
+    <div className="p-4 sm:p-6 space-y-4">
+      {/* Header */}
+      <div>
+        <Link to="/pipeline" className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground mb-2">
+          <ArrowLeft className="size-3" /> Voltar ao pipeline
+        </Link>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              {podeEditar ? (
+                <input
+                  defaultValue={venda.numero}
+                  key={venda.numero}
+                  className="font-mono text-[10px] text-muted-foreground bg-transparent border border-transparent hover:border-border focus:border-[var(--omni)] rounded px-1 py-0 outline-none w-[140px]"
+                  title="Número do pedido (editável)"
+                  onBlur={async (e) => {
+                    const v = e.target.value.trim();
+                    if (!v || v === venda.numero) { e.target.value = venda.numero; return; }
+                    await updateVenda(venda.id, { numero: v });
+                  }}
+                  onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") { (e.target as HTMLInputElement).value = venda.numero; (e.target as HTMLInputElement).blur(); } }}
+                />
+              ) : (
+                <span className="font-mono text-[10px] text-muted-foreground">{venda.numero}</span>
+              )}
+              <Badge variant="outline" className={cn(
+                "text-[9px] uppercase tracking-wider px-1.5 py-0 h-4",
+                `border-[var(--${operadoraCor})]/40 text-[var(--${operadoraCor})]`
+              )}>
+                {venda.operadora}
+              </Badge>
+              <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4">{venda.tipoPedido}</Badge>
+              {venda.temErro && (
+                <Badge className="bg-destructive/15 text-destructive border-destructive/40 text-[9px] gap-1 shadow-[0_0_8px_-2px_hsl(var(--destructive)/0.7)]">
+                  <span className="size-1.5 rounded-full bg-destructive animate-pulse shadow-[0_0_5px_hsl(var(--destructive))]" />ERRO EM ABERTO
+                </Badge>
+              )}
+              {venda.statusBiometria && (
+                <Badge className={cn("text-[9px] gap-1 border", bioTone(venda.statusBiometria))}>
+                  <Fingerprint className="size-2.5" />{bioLabel(venda.statusBiometria).toUpperCase()}
+                </Badge>
+              )}
+              {venda.statusPedido && (
+                <StatusPedidoBadge
+                  status={venda.statusPedido}
+                  obs={venda.statusPedidoObs}
+                  userNome={venda.statusPedidoUserNome}
+                  em={venda.statusPedidoEm}
+                />
+              )}
+              <ComissaoBadge vendaId={venda.id} />
+
+            </div>
+            <h1 className="text-2xl font-display font-bold tracking-tight">{cliente.razaoSocial}</h1>
+            <p className="text-sm text-muted-foreground">
+              {funilNome} → <span className="text-foreground font-semibold">{etapa?.nome}</span>
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {podeEditar && (
+              <Button variant="outline" size="sm" className="gap-2" onClick={abrirEdicao}>
+                <Pencil className="size-3.5" /> Editar
+              </Button>
+            )}
+            {podeVirarVenda && podeTransicionar && (
+              <Button size="sm" className="bg-success text-success-foreground hover:bg-success/90 font-semibold gap-2" onClick={() => setConfirmAcao("virar")}>
+                <ArrowRightCircle className="size-3.5" /> Virar Venda
+              </Button>
+            )}
+            {podeEnviarAssinatura && podeTransicionar && (
+              <Button size="sm" className="bg-[var(--omni)] text-black hover:bg-[var(--omni-glow)] font-semibold gap-2" onClick={() => setConfirmAcao("assinar")}>
+                <FileSignature className="size-3.5" /> Enviar para Assinatura
+              </Button>
+            )}
+            {!jaEmSuporte && (
+              <Button variant="outline" size="sm" className="gap-2" onClick={() => setSuporteOpen(true)}>
+                <LifeBuoy className="size-3.5" /> Suporte
+              </Button>
+            )}
+            <Button variant="outline" size="sm" className="gap-2" onClick={preverPDF}>
+              <Printer className="size-3.5" /> Pré-visualizar
+            </Button>
+            <Button size="sm" className="bg-[var(--omni)] text-black hover:bg-[var(--omni-glow)] font-semibold gap-2" onClick={baixarPDF}>
+              <Download className="size-3.5" /> Nota PDF
+            </Button>
+            {isAdminGestor && (
+              <Button variant="ghost" size="sm" className="text-destructive gap-2" onClick={() => {
+                setSuporteMotivo(""); // Reusa o estado de motivo para a exclusão
+                setConfirmAcao("excluir");
+              }}>
+                <Trash2 className="size-3.5" /> Excluir
+              </Button>
+            )}
+            {/* Modal de exclusão ... */}
+            <AlertDialog open={confirmAcao === "excluir"} onOpenChange={(o) => !o && setConfirmAcao(null)}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Excluir pedido?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Tem certeza que deseja excluir este pedido? Ele será removido das listagens operacionais, dashboards e funis, mas o histórico será preservado para auditoria.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <div className="space-y-2">
+                  <Label>Motivo da exclusão (obrigatório)</Label>
+                  <Textarea 
+                    value={suporteMotivo} 
+                    onChange={e => setSuporteMotivo(e.target.value)} 
+                    placeholder="Ex: Pedido duplicado, cancelamento solicitado pelo cliente..." 
+                  />
+                </div>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                  <Button variant="destructive" disabled={!suporteMotivo.trim() || editSaving} onClick={async () => {
+                     setEditSaving(true);
+                     const { deleteVenda } = await import("@/lib/exclusao.functions");
+                     try {
+                       const res = await deleteVenda({ data: { vendaId: venda.id, reason: suporteMotivo } });
+                       if (res.success) {
+                         toast.success("Pedido excluído com sucesso."); 
+                         navigate({ to: "/pipeline" }); 
+                       }
+                     } catch (e: any) {
+                       console.error("[ERRO EXCLUSÃO]", e);
+                       toast.error(e.message || "Não foi possível excluir o pedido. Tente novamente.");
+                     } finally {
+                       setEditSaving(false);
+                     }
+                  }}>{editSaving ? "Excluindo..." : "Confirmar exclusão"}</Button>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
+        </div>
+      </div>
+
+      {/* KPI bar */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <MiniKpi label="Receita" value={brl(venda.receita)} icon={<Banknote className="size-4" />} tone="success" />
+        <MiniKpi label="Linhas" value={String(venda.quantidadeLinhas)} icon={<Hash className="size-4" />} tone="info" />
+        <MiniKpi label="Dias na etapa" value={`${venda.diasNaEtapa}d`} icon={<Clock className="size-4" />} tone={venda.slaStatus === "atrasado" ? "destructive" : "omni"} />
+        <MiniKpi label="Consultor" value={consultor?.iniciais ?? "—"} sublabel={consultor?.nome} icon={<Building2 className="size-4" />} tone="purple" />
+        <MiniKpi label="Próx. ação" value={venda.proximaAcaoData} sublabel={venda.proximaAcao} icon={<Calendar className="size-4" />} tone="omni" />
+      </div>
+
+      <Tabs defaultValue="resumo">
+        <TabsList className="bg-surface-1 border border-border">
+          <TabsTrigger value="resumo">Resumo</TabsTrigger>
+          <TabsTrigger value="cliente">Cliente</TabsTrigger>
+          <TabsTrigger value="linhas">Linhas</TabsTrigger>
+          <TabsTrigger value="nota">Nota do Pedido</TabsTrigger>
+          <TabsTrigger value="historico">Histórico</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="resumo" className="mt-4">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <Block title="Dados Comerciais">
+              <Row k="Operadora" v={venda.operadora} />
+              <Row k="Tipo de pedido" v={venda.tipoPedido} />
+              <Row k="Produto" v={venda.produto} />
+              <Row k="Status" v={venda.status} />
+              <Row k="Mês ref." v={`${String(venda.mesRef).padStart(2, "0")}/${venda.anoRef}`} />
+            </Block>
+            <Block title="Operação">
+              <Row k="Funil" v={funilNome} />
+              <Row k="Etapa" v={etapa?.nome ?? "—"} />
+              <Row k="Consultor" v={consultor?.nome ?? "—"} />
+              <Row k="BKO" v={bko?.nome ?? "—"} />
+              <Row k="SLA" v={venda.slaStatus.toUpperCase()} />
+            </Block>
+            <Block title="Datas">
+              <DatasBlock venda={venda} canEdit={podeEditarDatas} updateVenda={updateVenda} user={user} profile={profile} roles={roles} />
+            </Block>
+          </div>
+          <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <BiometriaBlock
+              status={(venda.statusBiometria ?? "") as BiometriaStatus}
+              canEdit={podeEditar}
+              onChange={async (s) => { await updateVenda(venda.id, { status_biometria: s === "" ? null : s }); }}
+            />
+            <StatusPedidoBlock
+              status={(venda.statusPedido ?? "") as StatusPedido}
+              obs={venda.statusPedidoObs ?? ""}
+              userNome={venda.statusPedidoUserNome}
+              em={venda.statusPedidoEm}
+              canEdit={podeEditar}
+              onSave={async (s, obs) => {
+                await updateVenda(venda.id, {
+                  status_pedido: s === "" ? null : s,
+                  status_pedido_obs: obs.trim() || null,
+                  status_pedido_user_id: user?.id ?? null,
+                  status_pedido_user_nome: `${profile?.nome_completo ?? user?.email ?? "Sistema"} (${roles[0] || "consultor"})`,
+                  status_pedido_em: new Date().toISOString(),
+                });
+              }}
+            />
+          </div>
+          <div className="mt-4">
+            <ErrosPedido vendaId={venda.id} podeEditar={podeEditar} onChanged={reloadFromDb} />
+          </div>
+          {venda.observacao && (
+            <div className="mt-4 rounded-xl border border-warning/30 bg-warning/5 p-4 flex gap-3">
+              <MessageSquare className="size-4 text-warning shrink-0 mt-0.5" />
+              <div>
+                <div className="text-xs font-semibold text-warning mb-1">Observação</div>
+                <div className="text-sm">{venda.observacao}</div>
+              </div>
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="cliente" className="mt-4">
+          <div className="rounded-xl border border-border bg-card p-5">
+            <div className="flex items-start gap-4 mb-4 pb-4 border-b border-border">
+              <div className="size-14 rounded-xl bg-surface-2 grid place-items-center">
+                <Building2 className="size-7 text-omni" />
+              </div>
+              <div>
+                <div className="text-xl font-display font-bold">{cliente.razaoSocial}</div>
+                <div className="text-xs font-mono text-muted-foreground">{maskCpfCnpj(cliente.cnpj)}</div>
+                <div className="flex gap-1 mt-1.5">
+                  {cliente.operadoras.map(op => (
+                    <Badge key={op} variant="outline" className={cn(
+                      "text-[9px] uppercase tracking-wider px-1.5 py-0 h-4",
+                      op === "CLARO" ? "border-[var(--claro)]/40 text-[var(--claro)]" : "border-[var(--vivo)]/40 text-[var(--vivo)]"
+                    )}>
+                      {op}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              <Row k="Contato" v={cliente.contato} />
+              <Row k="Telefone" v={cliente.telefone} />
+              <Row k="E-mail" v={cliente.email} />
+              <Row k="UF / DDD" v={`${cliente.uf} · ${cliente.ddd}`} />
+              <Row k="Linhas ativas" v={String(cliente.totalLinhas)} />
+              <Row k="Receita mensal" v={brl(cliente.receitaMensal)} />
+            </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="linhas" className="mt-4">
+          <LinhasTab
+            vendaId={venda.id}
+            operadora={venda.operadora}
+            tipoPedido={venda.tipoPedido}
+            produtoPadrao={venda.produto}
+            dddPadrao={cliente.ddd}
+            receitaVenda={venda.receita}
+            qtdVenda={venda.quantidadeLinhas}
+            podeEditar={podeEditar}
+            userId={user?.id ?? null}
+            reloadVenda={reloadFromDb}
+          />
+        </TabsContent>
+
+
+        <TabsContent value="nota" className="mt-4">
+          <NotaPedidoTab
+            venda={venda}
+            cliente={cliente}
+            consultorNome={consultor?.nome}
+            etapaNome={etapa?.nome ?? ""}
+            podeEditar={podeEditar}
+            onPdf={baixarPDF}
+            onPreviewPdf={preverPDF}
+            updateVenda={updateVenda}
+            userId={user?.id ?? null}
+            userNome={profile?.nome_completo ?? user?.email ?? null}
+            historicoDatas={historicoDb.filter(h => (h.campo ?? "").startsWith("data_"))}
+          />
+        </TabsContent>
+
+
+
+        <TabsContent value="historico" className="mt-4 space-y-4">
+          <TemposPorEtapa
+            historico={historicoDb}
+            etapaAtual={venda.etapaId}
+            createdAt={venda.dataRecebimento ?? new Date().toISOString()}
+          />
+
+          <div className="rounded-xl border border-border bg-card p-4">
+            <div className="flex items-center gap-2 mb-4">
+              <History className="size-4 text-omni" />
+              <h3 className="font-display font-semibold">Linha do Tempo</h3>
+            </div>
+            <div className="relative pl-6 space-y-4">
+              <div className="absolute left-2 top-2 bottom-2 w-px bg-border" />
+              {historicoDb.map(h => {
+                const tone =
+                  h.tipo === "criacao" ? "warning" :
+                  h.tipo === "etapa" || h.tipo === "funil" ? "purple" :
+                  h.tipo === "valor" ? "success" :
+                  h.tipo === "consultor" || h.tipo === "bko" ? "info" :
+                  h.tipo === "observacao" ? "omni" : "muted-foreground";
+                const data = new Date(h.created_at);
+                return (
+                  <div key={h.id} className="relative">
+                    <span className={cn("absolute -left-[18px] top-1 size-2.5 rounded-full ring-4 ring-card", `bg-[var(--${tone})]`)} />
+                    <div className="text-xs font-mono text-muted-foreground">
+                      {data.toLocaleString("pt-BR")} · {h.user_nome ?? "Sistema"} · <span className="uppercase">{h.tipo}</span>
+                    </div>
+                    <div className="text-sm mt-0.5">{h.descricao}</div>
+                    {h.valor_anterior && h.valor_novo && (
+                      <div className="text-[11px] font-mono mt-0.5 text-muted-foreground">
+                        <span className="line-through">{h.valor_anterior}</span> → <span className="text-foreground font-semibold">{h.valor_novo}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {historicoDb.length === 0 && historicoLegacy.length === 0 && (
+                <div className="text-xs text-muted-foreground italic">Nenhum evento registrado ainda.</div>
+              )}
+              {historicoDb.length === 0 && historicoLegacy.map(h => (
+                <div key={h.id} className="relative">
+                  <span className="absolute -left-[18px] top-1 size-2.5 rounded-full bg-[var(--omni)] ring-4 ring-card" />
+                  <div className="text-xs font-mono text-muted-foreground">{h.data} · {h.autor}</div>
+                  <div className="text-sm mt-0.5 flex items-center gap-2">{h.descricao}<ChevronRight className="size-3 text-muted-foreground" /></div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </TabsContent>
+      </Tabs>
+
+      {/* Modal Suporte */}
+      <Dialog open={suporteOpen} onOpenChange={setSuporteOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <LifeBuoy className="size-4 text-[var(--omni)]" /> Enviar para Suporte
+            </DialogTitle>
+            <DialogDescription>
+              O pedido <span className="font-mono">{venda.numero}</span> será movido para o funil Suporte.
+              Esta ação fica registrada no histórico da venda.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs">Etapa no Suporte</Label>
+              <Select value={suporteEtapa} onValueChange={setSuporteEtapa}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {ETAPAS.filter(e => e.funil === "suporte").map(e => (
+                    <SelectItem key={e.id} value={e.id}>{e.nome}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Motivo / descrição</Label>
+              <Textarea
+                rows={4}
+                value={suporteMotivo}
+                onChange={e => setSuporteMotivo(e.target.value)}
+                placeholder="Descreva o que precisa ser tratado pelo Suporte"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSuporteOpen(false)} disabled={suporteSaving}>
+              Cancelar
+            </Button>
+            <Button
+              className="bg-[var(--omni)] text-black hover:bg-[var(--omni-glow)] font-semibold"
+              onClick={confirmarSuporte}
+              disabled={suporteSaving}
+            >
+              {suporteSaving ? "Enviando…" : "Enviar para Suporte"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirmação Virar/Assinar */}
+      {/* Modal Editar Venda */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="sm:max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Pencil className="size-4 text-[var(--omni)]" /> Editar pedido {venda.numero}
+            </DialogTitle>
+            <DialogDescription>
+              Toda alteração é salva imediatamente e registrada no histórico.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5">
+            <Secao titulo="Comercial">
+              <Campo label="Receita (R$)">
+                <Input type="number" step="0.01" value={form.valor ?? 0}
+                  onChange={e => setForm(f => ({ ...f, valor: e.target.value }))} />
+              </Campo>
+              <Campo label="Qtd. linhas">
+                <Input type="number" value={form.quantidade_linhas ?? 0}
+                  onChange={e => setForm(f => ({ ...f, quantidade_linhas: e.target.value }))} />
+              </Campo>
+              <Campo label="Tipo de pedido">
+                <Select value={form.tipo_pedido ?? ""} onValueChange={v => setForm(f => ({ ...f, tipo_pedido: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+                  <SelectContent>
+                    {tiposCat.map(t => <SelectItem key={t.id} value={t.nome}>{t.nome}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Campo>
+              <Campo label="Produto">
+                <Select value={form.produto ?? ""} onValueChange={v => setForm(f => ({ ...f, produto: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+                  <SelectContent>
+                    {produtosCat.map(t => <SelectItem key={t.id} value={t.nome}>{t.nome}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Campo>
+              <Campo label="Status">
+                <Select value={form.status ?? ""} onValueChange={v => setForm(f => ({ ...f, status: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+                  <SelectContent>
+                    {statusCat.map(t => <SelectItem key={t.id} value={t.nome}>{t.nome}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Campo>
+              <Campo label="Etapa">
+                <Select value={form.etapa_id ?? ""} onValueChange={v => setForm(f => ({ ...f, etapa_id: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {ETAPAS.map(e => <SelectItem key={e.id} value={e.id}>{FUNIS.find(f => f.id === e.funil)?.nome} · {e.nome}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Campo>
+            </Secao>
+
+            <Secao titulo="Operação">
+              <Campo label="BKO">
+                <Select value={form.bko_colab_id ?? "_none"} onValueChange={v => setForm(f => ({ ...f, bko_colab_id: v === "_none" ? null : v }))}>
+                  <SelectTrigger><SelectValue placeholder="—" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="_none">— Sem BKO —</SelectItem>
+                    {bkos.map(c => <SelectItem key={c.id} value={c.id}>{c.nome_exibicao}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Campo>
+              <Campo label="SLA">
+                <Select value={form.sla_status ?? "ok"} onValueChange={v => setForm(f => ({ ...f, sla_status: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ok">OK</SelectItem>
+                    <SelectItem value="alerta">Alerta</SelectItem>
+                    <SelectItem value="atrasado">Atrasado</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Campo>
+              <Campo label="Próxima ação">
+                <Input value={form.proxima_acao ?? ""} onChange={e => setForm(f => ({ ...f, proxima_acao: e.target.value }))} />
+              </Campo>
+              <Campo label="Data da próx. ação">
+                <Input type="date" value={form.proxima_acao_data ?? ""} onChange={e => setForm(f => ({ ...f, proxima_acao_data: e.target.value }))} />
+              </Campo>
+            </Secao>
+
+            <Secao titulo="Datas">
+              <Campo label="Recebimento"><Input type="date" value={form.data_recebimento ?? ""} onChange={e => setForm(f => ({ ...f, data_recebimento: e.target.value }))} /></Campo>
+              <Campo label="Aceite"><Input type="date" value={form.data_aceite ?? ""} onChange={e => setForm(f => ({ ...f, data_aceite: e.target.value }))} /></Campo>
+              <Campo label="Ativação"><Input type="date" value={form.data_ativacao ?? ""} onChange={e => setForm(f => ({ ...f, data_ativacao: e.target.value }))} /></Campo>
+              <Campo label="Entrega"><Input type="date" value={form.data_entrega ?? ""} onChange={e => setForm(f => ({ ...f, data_entrega: e.target.value }))} /></Campo>
+            </Secao>
+
+            <Secao titulo="Cliente">
+              <Campo label="Contato"><Input value={form.cliente_contato ?? ""} onChange={e => setForm(f => ({ ...f, cliente_contato: e.target.value }))} /></Campo>
+              <Campo label="Telefone"><Input value={form.cliente_telefone ?? ""} onChange={e => setForm(f => ({ ...f, cliente_telefone: e.target.value }))} /></Campo>
+              <Campo label="E-mail"><Input value={form.cliente_email ?? ""} onChange={e => setForm(f => ({ ...f, cliente_email: e.target.value }))} /></Campo>
+              <Campo label="UF"><Input value={form.cliente_uf ?? ""} onChange={e => setForm(f => ({ ...f, cliente_uf: e.target.value }))} /></Campo>
+            </Secao>
+
+            <Secao titulo="Portabilidade & Biometria">
+              <Campo label="Status portabilidade"><Input value={form.status_portabilidade ?? ""} onChange={e => setForm(f => ({ ...f, status_portabilidade: e.target.value }))} /></Campo>
+              <Campo label="Data portabilidade"><Input type="date" value={form.data_portabilidade ?? ""} onChange={e => setForm(f => ({ ...f, data_portabilidade: e.target.value }))} /></Campo>
+              <Campo label="Status biometria"><Input value={form.status_biometria ?? ""} onChange={e => setForm(f => ({ ...f, status_biometria: e.target.value }))} /></Campo>
+            </Secao>
+
+            <Secao titulo="Logística / NF">
+              <Campo label="Nota fiscal"><Input value={form.nota_fiscal ?? ""} onChange={e => setForm(f => ({ ...f, nota_fiscal: e.target.value }))} /></Campo>
+              <Campo label="Cód. rastreio"><Input value={form.cod_rastreio ?? ""} onChange={e => setForm(f => ({ ...f, cod_rastreio: e.target.value }))} /></Campo>
+              <Campo label="Equipamentos"><Input value={form.equipamentos ?? ""} onChange={e => setForm(f => ({ ...f, equipamentos: e.target.value }))} /></Campo>
+            </Secao>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">Observação</Label>
+              <Textarea rows={3} value={form.observacao ?? ""} onChange={e => setForm(f => ({ ...f, observacao: e.target.value }))} />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)} disabled={editSaving}>Cancelar</Button>
+            <Button className="bg-[var(--omni)] text-black hover:bg-[var(--omni-glow)] font-semibold gap-2" onClick={salvarEdicao} disabled={editSaving}>
+              <Save className="size-3.5" /> {editSaving ? "Salvando…" : "Salvar alterações"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={confirmAcao !== null} onOpenChange={(o: boolean) => { if (!o) setConfirmAcao(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirmAcao === "virar" ? "Virar Venda?" : "Enviar para Assinatura?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmAcao === "virar"
+                ? `O pedido ${venda.numero} sairá de Prospecção e entrará em Follow Up. Esta ação ficará registrada no histórico.`
+                : `O pedido ${venda.numero} será movido para o funil Assinatura. Esta ação ficará registrada no histórico.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={async () => {
+                const acao = confirmAcao;
+                setConfirmAcao(null);
+                if (acao === "virar") await virarVenda();
+                else if (acao === "assinar") await enviarAssinatura();
+              }}
+            >
+              Confirmar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+function MiniKpi({ label, value, sublabel, icon, tone }: {
+  label: string; value: string; sublabel?: string; icon: React.ReactNode; tone: string;
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-card p-3">
+      <div className="flex items-center gap-2 mb-1.5">
+        <div className={cn("size-7 rounded-lg grid place-items-center", `bg-[var(--${tone})]/15 text-[var(--${tone})]`)}>
+          {icon}
+        </div>
+        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">{label}</span>
+      </div>
+      <div className="font-display text-lg font-bold leading-tight">{value}</div>
+      {sublabel && <div className="text-[10px] text-muted-foreground truncate">{sublabel}</div>}
+    </div>
+  );
+}
+
+function Block({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl border border-border bg-card p-4">
+      <h3 className="font-display font-semibold mb-3 text-sm">{title}</h3>
+      <div className="space-y-2 text-sm">{children}</div>
+    </div>
+  );
+}
+
+type BiometriaStatus = "" | "pendente" | "concluido" | "cancelado";
+const BIO_OPTS: { value: BiometriaStatus; label: string; tone: string }[] = [
+  { value: "", label: "Sem informação", tone: "bg-muted text-muted-foreground border-border" },
+  { value: "pendente", label: "Biometria pendente", tone: "bg-warning/15 text-warning border-warning/40" },
+  { value: "concluido", label: "Biometria concluída", tone: "bg-success/15 text-success border-success/40" },
+  { value: "cancelado", label: "Biometria cancelada", tone: "bg-destructive/15 text-destructive border-destructive/40" },
+];
+export function bioLabel(s?: string | null) {
+  return BIO_OPTS.find(o => o.value === (s ?? ""))?.label ?? "Sem informação";
+}
+export function bioTone(s?: string | null) {
+  return BIO_OPTS.find(o => o.value === (s ?? ""))?.tone ?? BIO_OPTS[0].tone;
+}
+
+function BiometriaBlock({ status, canEdit, onChange }: {
+  status: BiometriaStatus; canEdit: boolean; onChange: (s: BiometriaStatus) => Promise<void> | void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [open, setOpen] = useState(false);
+  const current = BIO_OPTS.find(o => o.value === status) ?? BIO_OPTS[0];
+
+  const vis = {
+    "": {
+      ringFrom: "#3a3a45", ringTo: "#1a1a22", glow: "transparent",
+      iconClass: "text-muted-foreground/60", text: "Sem informação",
+      bg: "from-slate-900/40 to-slate-950/60",
+    },
+    pendente: {
+      ringFrom: "#facc15", ringTo: "#f97316", glow: "hsl(var(--warning))",
+      iconClass: "text-warning drop-shadow-[0_0_10px_hsl(var(--warning))]",
+      text: "Biometria pendente",
+      bg: "from-amber-500/10 to-orange-600/5",
+    },
+    concluido: {
+      ringFrom: "#22c55e", ringTo: "#16a34a", glow: "hsl(var(--success))",
+      iconClass: "text-success drop-shadow-[0_0_12px_hsl(var(--success))]",
+      text: "Biometria concluída",
+      bg: "from-emerald-500/10 to-green-700/5",
+    },
+    cancelado: {
+      ringFrom: "#ef4444", ringTo: "#7f1d1d", glow: "hsl(var(--destructive))",
+      iconClass: "text-destructive drop-shadow-[0_0_10px_hsl(var(--destructive))]",
+      text: "Biometria cancelada",
+      bg: "from-red-600/10 to-red-900/5",
+    },
+  }[status || ""] as any;
+
+  return (
+    <div className={cn(
+      "relative overflow-hidden rounded-xl border bg-card p-4 transition-shadow",
+      status === "concluido" && "border-success/30 shadow-[0_0_24px_-10px_hsl(var(--success)/0.6)]",
+      status === "pendente" && "border-warning/30 shadow-[0_0_24px_-10px_hsl(var(--warning)/0.6)]",
+      status === "cancelado" && "border-destructive/30 shadow-[0_0_24px_-10px_hsl(var(--destructive)/0.6)]",
+      !status && "border-border",
+    )}>
+      <div className={cn("absolute inset-0 bg-gradient-to-br opacity-60 pointer-events-none", vis.bg)} />
+      <div className="relative flex items-center justify-between mb-3">
+        <h3 className="font-display font-semibold text-sm flex items-center gap-2">
+          <Fingerprint className="size-4 text-omni" /> Biometria
+        </h3>
+        <span className={cn("text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded border", current.tone)}>
+          {current.label}
+        </span>
+      </div>
+
+      <div className="relative flex flex-col items-center gap-4 py-4">
+        <Popover open={open} onOpenChange={(v) => canEdit && setOpen(v)}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              disabled={!canEdit || saving}
+              className={cn(
+                "group relative size-28 rounded-full grid place-items-center transition-transform",
+                canEdit && "hover:scale-105 active:scale-95 cursor-pointer",
+                !canEdit && "cursor-not-allowed",
+              )}
+              style={{
+                background: `radial-gradient(circle at 30% 25%, ${vis.ringFrom}, ${vis.ringTo} 70%)`,
+                boxShadow: status
+                  ? `0 0 40px -8px ${vis.glow}, inset 0 2px 8px rgba(255,255,255,0.25), inset 0 -8px 16px rgba(0,0,0,0.4)`
+                  : "inset 0 2px 8px rgba(255,255,255,0.08), inset 0 -8px 16px rgba(0,0,0,0.6)",
+              }}
+              title={canEdit ? "Clique para alterar a biometria" : "Sem permissão"}
+            >
+              {/* anel pulsante */}
+              {status === "pendente" && (
+                <span className="absolute inset-0 rounded-full ring-2 ring-warning/60 animate-pulse" />
+              )}
+              {status === "concluido" && (
+                <span className="absolute -bottom-1 -right-1 size-7 rounded-full bg-success grid place-items-center shadow-[0_0_12px_hsl(var(--success))] ring-2 ring-background">
+                  <CheckCircle2 className="size-4 text-white" />
+                </span>
+              )}
+              {status === "cancelado" && (
+                <span className="absolute -bottom-1 -right-1 size-7 rounded-full bg-destructive grid place-items-center shadow-[0_0_12px_hsl(var(--destructive))] ring-2 ring-background">
+                  <XCircle className="size-4 text-white" />
+                </span>
+              )}
+              <Fingerprint className={cn("size-14 transition-all", vis.iconClass)} strokeWidth={1.5} />
+              {/* reflexo */}
+              <span className="absolute top-2 left-4 size-8 rounded-full bg-white/20 blur-md" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent className="w-52 p-1" align="center">
+            {BIO_OPTS.map(opt => {
+              const active = opt.value === status;
+              return (
+                <button
+                  key={opt.value || "vazio"}
+                  type="button"
+                  disabled={saving}
+                  onClick={async () => {
+                    if (active) { setOpen(false); return; }
+                    setSaving(true);
+                    try { await onChange(opt.value); setOpen(false); }
+                    finally { setSaving(false); }
+                  }}
+                  className={cn(
+                    "w-full text-left text-xs px-2.5 py-2 rounded-md flex items-center gap-2 transition-colors",
+                    active ? cn(opt.tone, "font-semibold") : "hover:bg-muted",
+                  )}
+                >
+                  <span className={cn(
+                    "size-2 rounded-full",
+                    opt.value === "" && "bg-muted-foreground/50",
+                    opt.value === "pendente" && "bg-warning shadow-[0_0_6px_hsl(var(--warning))]",
+                    opt.value === "concluido" && "bg-success shadow-[0_0_6px_hsl(var(--success))]",
+                    opt.value === "cancelado" && "bg-destructive shadow-[0_0_6px_hsl(var(--destructive))]",
+                  )} />
+                  {opt.value === "" ? "Vazio" : opt.label.replace("Biometria ", "").replace(/^./, c => c.toUpperCase())}
+                </button>
+              );
+            })}
+          </PopoverContent>
+        </Popover>
+        <div className="text-center">
+          <div className="text-sm font-semibold">{vis.text}</div>
+          <div className="text-[11px] text-muted-foreground mt-0.5">
+            {canEdit ? "Clique na digital para alterar" : "Somente leitura"}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============== STATUS DO PEDIDO ==============
+type StatusPedido = "" | "ativado" | "cancelado" | "reprovado" | "prd_suporte";
+const STATUS_PEDIDO_OPTS: { value: StatusPedido; label: string; tone: string; icon: typeof CheckCircle2; needsObs: boolean; obsLabel: string }[] = [
+  { value: "ativado", label: "Ativado 100%", tone: "bg-success/15 text-success border-success/40", icon: CheckCircle2, needsObs: false, obsLabel: "" },
+  { value: "cancelado", label: "Cancelado", tone: "bg-destructive/15 text-destructive border-destructive/40", icon: XCircle, needsObs: true, obsLabel: "Motivo / observação do cancelamento" },
+  { value: "reprovado", label: "Reprovado", tone: "bg-warning/15 text-warning border-warning/40", icon: AlertCircle, needsObs: true, obsLabel: "Motivo / observação da reprovação" },
+  { value: "prd_suporte", label: "PRD/Suporte", tone: "bg-info/15 text-info border-info/40", icon: Headphones, needsObs: true, obsLabel: "Descrição da tratativa / suporte / PRD" },
+];
+function statusPedidoOpt(s?: string | null) {
+  return STATUS_PEDIDO_OPTS.find(o => o.value === (s as StatusPedido)) ?? null;
+}
+
+function StatusPedidoBadge({ status, obs, userNome, em }: {
+  status: string; obs?: string; userNome?: string; em?: string;
+}) {
+  const opt = statusPedidoOpt(status);
+  if (!opt) return null;
+  const Ico = opt.icon;
+  const badge = (
+    <Badge className={cn("text-[9px] gap-1 border cursor-help", opt.tone)}>
+      <Ico className="size-2.5" /> {opt.label.toUpperCase()}
+    </Badge>
+  );
+  if (!obs) return badge;
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>{badge}</TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-xs bg-[#0a0a0f] border-2 border-warning/60 shadow-[0_0_20px_-4px_hsl(var(--warning)/0.6)] px-3 py-2.5">
+          <div className="space-y-1 text-xs">
+            <div className="font-bold text-sm flex items-center gap-1.5 text-warning">
+              <Ico className="size-3.5" /> {opt.label}
+            </div>
+            <div className="border-t border-border/60 pt-1"><span className="text-muted-foreground">Observação:</span> {obs}</div>
+            {userNome && <div><span className="text-muted-foreground">Por:</span> {userNome}</div>}
+            {em && <div><span className="text-muted-foreground">Em:</span> {new Date(em).toLocaleString("pt-BR")}</div>}
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+function ComissaoBadge({ vendaId }: { vendaId: string }) {
+  const [row, setRow] = useState<{ status: string; valor_comissao: number; sem_regra: boolean } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { data } = await (supabase as any)
+        .from("comissao_itens")
+        .select("status, valor_comissao, sem_regra")
+        .eq("venda_id", vendaId)
+        .maybeSingle();
+      if (alive) setRow(data ?? null);
+    })();
+    return () => { alive = false; };
+  }, [vendaId]);
+  if (!row) return null;
+  const tone =
+    row.status === "confirmada" ? "bg-success/15 text-success border-success/40" :
+    row.status === "cancelada" ? "bg-destructive/15 text-destructive border-destructive/40" :
+    row.status === "paga" ? "bg-info/15 text-info border-info/40" :
+    row.sem_regra ? "bg-muted text-muted-foreground border-muted-foreground/30" :
+    "bg-warning/15 text-warning border-warning/40";
+  const label =
+    row.status === "confirmada" ? "COMISSÃO CONFIRMADA" :
+    row.status === "cancelada" ? "COMISSÃO CANCELADA" :
+    row.status === "paga" ? "COMISSÃO PAGA" :
+    row.status === "revisada" ? "COMISSÃO REVISADA" :
+    row.sem_regra ? "COMISSÃO SEM REGRA" :
+    "COMISSÃO PENDENTE";
+  return (
+    <Badge className={cn("text-[9px] gap-1 border", tone)} title={`Valor: ${brl(Number(row.valor_comissao || 0))}`}>
+      <Banknote className="size-2.5" /> {label}
+    </Badge>
+  );
+}
+
+function StatusPedidoBlock({
+  status, obs, userNome, em, canEdit, onSave,
+}: {
+  status: StatusPedido; obs: string; userNome?: string; em?: string;
+  canEdit: boolean; onSave: (status: StatusPedido, obs: string) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [escolha, setEscolha] = useState<StatusPedido>(status);
+  const [texto, setTexto] = useState(obs);
+  const [saving, setSaving] = useState(false);
+  const current = statusPedidoOpt(status);
+  const escolhaOpt = statusPedidoOpt(escolha);
+
+  function abrir(s: StatusPedido) {
+    if (!canEdit) return;
+    setEscolha(s);
+    setTexto(obs);
+    setOpen(true);
+  }
+
+  async function salvar() {
+    if (escolhaOpt?.needsObs && !texto.trim()) {
+      toast.error("Observação obrigatória", { description: escolhaOpt.obsLabel });
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(escolha, escolhaOpt?.needsObs ? texto : (texto || ""));
+      setOpen(false);
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4 relative overflow-hidden">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-display font-semibold text-sm flex items-center gap-2">
+          <FileSignature className="size-4 text-omni" /> Status do Pedido
+        </h3>
+        {current && obs && (
+          <TooltipProvider delayDuration={150}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button type="button" className="text-muted-foreground hover:text-foreground">
+                  <Info className="size-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="left" className="max-w-xs bg-[#0a0a0f] border-2 border-warning/60 shadow-[0_0_20px_-4px_hsl(var(--warning)/0.6)] px-3 py-2.5">
+                <div className="space-y-1 text-xs">
+                  <div className="font-bold text-sm text-warning">{current.label}</div>
+                  <div className="border-t border-border/60 pt-1"><span className="text-muted-foreground">Observação:</span> {obs}</div>
+                  {userNome && <div><span className="text-muted-foreground">Por:</span> {userNome}</div>}
+                  {em && <div><span className="text-muted-foreground">Em:</span> {new Date(em).toLocaleString("pt-BR")}</div>}
+                </div>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        {STATUS_PEDIDO_OPTS.map(opt => {
+          const Ico = opt.icon;
+          const active = opt.value === status;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              disabled={!canEdit}
+              onClick={() => abrir(opt.value)}
+              className={cn(
+                "rounded-lg border px-3 py-2 text-left flex items-center gap-2 text-xs font-semibold transition-all",
+                active ? cn(opt.tone, "shadow-[0_0_14px_-6px_currentColor]") : "border-border bg-background hover:bg-muted/40",
+                !canEdit && !active && "opacity-50 cursor-not-allowed",
+              )}
+            >
+              <Ico className="size-4 shrink-0" />
+              <span className="truncate">{opt.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {current && (
+        <div className="mt-3 rounded-lg border border-border/60 bg-background/40 p-2.5 text-xs">
+          <div className="flex items-center gap-2">
+            <span className={cn("size-2 rounded-full", status === "ativado" ? "bg-success" : status === "cancelado" ? "bg-destructive" : status === "reprovado" ? "bg-warning" : "bg-info")} />
+            <span className="font-semibold">{current.label}</span>
+            {canEdit && (
+              <button onClick={() => abrir(status)} className="ml-auto text-muted-foreground hover:text-foreground" title="Editar observação">
+                <Pencil className="size-3.5" />
+              </button>
+            )}
+          </div>
+          {obs && <div className="text-muted-foreground mt-1 line-clamp-2">{obs}</div>}
+          {userNome && <div className="text-[10px] text-muted-foreground mt-1">alterado por {userNome}{em ? ` · ${new Date(em).toLocaleString("pt-BR")}` : ""}</div>}
+        </div>
+      )}
+
+      {!canEdit && !current && (
+        <p className="text-[10px] text-muted-foreground mt-2">Sem status definido.</p>
+      )}
+
+      <Dialog open={open} onOpenChange={(v) => !saving && setOpen(v)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {escolhaOpt && <escolhaOpt.icon className="size-4" />}
+              Status do Pedido: {escolhaOpt?.label}
+            </DialogTitle>
+            <DialogDescription>
+              {escolhaOpt?.needsObs
+                ? "Preencha a observação obrigatória para registrar esse status."
+                : "Confirme a alteração do status do pedido."}
+            </DialogDescription>
+          </DialogHeader>
+          {escolhaOpt?.needsObs && (
+            <div className="space-y-1.5">
+              <Label className="text-xs">{escolhaOpt.obsLabel}</Label>
+              <Textarea rows={4} value={texto} onChange={e => setTexto(e.target.value)} placeholder="Descreva o motivo…" />
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>Cancelar</Button>
+            <Button onClick={salvar} disabled={saving} className="bg-[var(--omni)] text-black hover:bg-[var(--omni-glow)] font-semibold">
+              {saving ? "Salvando…" : "Salvar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function Row({ k, v, className }: { k: string; v: string; className?: string }) {
+  return (
+    <div className={cn("flex justify-between items-center gap-3 py-1.5 border-b border-border/40 last:border-0", className)}>
+      <span className="text-xs text-muted-foreground">{k}</span>
+      <span className="font-medium text-right truncate">{v}</span>
+    </div>
+  );
+}
+
+function parseISODate(s?: string | null): Date | undefined {
+  if (!s) return undefined;
+  const [y, m, d] = s.slice(0, 10).split("-").map(Number);
+  if (!y || !m || !d) return undefined;
+  return new Date(y, m - 1, d);
+}
+function fmtBR(s?: string | null): string {
+  const d = parseISODate(s);
+  if (!d) return "—";
+  return d.toLocaleDateString("pt-BR");
+}
+function toISO(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+const ORDEM_DATAS: { key: string; venda: string; label: string }[] = [
+  { key: "data_recebimento",   venda: "dataRecebimento",   label: "Recebimento" },
+  { key: "data_preenchimento", venda: "dataPreenchimento", label: "Preenchimento" },
+  { key: "data_envio",         venda: "dataEnvio",         label: "Envio" },
+  { key: "data_aceite",        venda: "dataAceite",        label: "Aceite" },
+  { key: "data_input",         venda: "dataInput",         label: "Input" },
+  { key: "data_ativacao",      venda: "dataAtivacao",      label: "Ativação" },
+];
+
+function DatasBlock({
+  venda, canEdit, updateVenda, user, profile, roles
+}: {
+  venda: any; canEdit: boolean;
+  updateVenda: (id: string, patch: Record<string, unknown>) => Promise<boolean>;
+  user: any; profile: any; roles: string[];
+}) {
+  const valores: Record<string, string | undefined> = {
+    data_recebimento: venda.dataRecebimento,
+    data_preenchimento: venda.dataPreenchimento,
+    data_envio: venda.dataEnvio,
+    data_aceite: venda.dataAceite,
+    data_input: venda.dataInput,
+    data_ativacao: venda.dataAtivacao,
+    data_portabilidade: venda.dataPortabilidade,
+    data_entrega: venda.dataEntrega,
+  };
+  // min = maior data anterior preenchida na ordem cronológica
+  const minFor = (key: string): Date | undefined => {
+    const idx = ORDEM_DATAS.findIndex(o => o.key === key);
+    if (idx <= 0) return undefined;
+    for (let i = idx - 1; i >= 0; i--) {
+      const d = parseISODate(valores[ORDEM_DATAS[i].key] ?? null);
+      if (d) return d;
+    }
+    return undefined;
+  };
+  // max = menor data posterior preenchida na ordem cronológica
+  const maxFor = (key: string): Date | undefined => {
+    const idx = ORDEM_DATAS.findIndex(o => o.key === key);
+    if (idx === -1 || idx === ORDEM_DATAS.length - 1) return undefined;
+    for (let i = idx + 1; i < ORDEM_DATAS.length; i++) {
+      const d = parseISODate(valores[ORDEM_DATAS[i].key] ?? null);
+      if (d) return d;
+    }
+    return undefined;
+  };
+  // Portabilidade e Entrega: precisam ser >= Aceite (se houver)
+  const minAceite = parseISODate(valores.data_aceite);
+
+  async function salvar(field: string, novoISO: string | null) {
+    const original = valores[field] ?? null;
+    if (novoISO === original) return;
+    await updateVenda(venda.id, { 
+      [field]: novoISO,
+      status_pedido_user_id: user?.id,
+      status_pedido_user_nome: `${profile?.nome_completo ?? user?.email ?? "Sistema"} (${roles[0] || "consultor"})`,
+      status_pedido_em: new Date().toISOString()
+    });
+  }
+
+  return (
+    <>
+      {ORDEM_DATAS.map(({ key, label }) => (
+        <DatePickerField
+          key={key}
+          label={label}
+          value={valores[key]}
+          canEdit={canEdit}
+          minDate={minFor(key)}
+          maxDate={maxFor(key)}
+          onSave={(iso) => salvar(key, iso)}
+          venda={venda}
+        />
+      ))}
+      <DatePickerField
+        label="Portabilidade"
+        value={valores.data_portabilidade}
+        canEdit={canEdit}
+        minDate={minAceite}
+        onSave={(iso) => salvar("data_portabilidade", iso)}
+        venda={venda}
+      />
+      <DatePickerField
+        label="Entrega/Instalação"
+        value={valores.data_entrega}
+        canEdit={canEdit}
+        minDate={minAceite}
+        onSave={(iso) => salvar("data_entrega", iso)}
+        venda={venda}
+      />
+      <Row 
+        k="Última alteração" 
+        v={venda.atualizadoEm ? `${new Date(venda.atualizadoEm).toLocaleString("pt-BR")} · ${venda.statusPedidoUserNome || "Sistema"}` : "—"} 
+        className="bg-muted/30 px-2 py-2 rounded-md border-0 mt-2"
+      />
+      <Row k="Próx. ação" v={fmtBR(venda.proximaAcaoData)} />
+    </>
+  );
+}
+
+function DatePickerField({
+  label, value, canEdit, minDate, maxDate, onSave, venda
+}: {
+  label: string;
+  value?: string | null;
+  canEdit: boolean;
+  minDate?: Date;
+  maxDate?: Date;
+  onSave: (iso: string | null) => Promise<void> | void;
+  venda?: any;
+}) {
+  const [open, setOpen] = useState(false);
+  const { profile, user, roles } = useAuth();
+  const date = parseISODate(value);
+
+  return (
+    <div className="flex justify-between items-center gap-3 py-1.5 border-b border-border/40 last:border-0 group relative">
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs text-muted-foreground">{label}</span>
+        {venda?.statusPedidoUserNome && (label !== "Última alteração") && (
+          <TooltipProvider delayDuration={150}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="text-[9px] text-muted-foreground/40 mt-0.5 cursor-default truncate max-w-[80px]">
+                  {venda.statusPedidoUserNome.split(' · ')[0] || venda.statusPedidoUserNome}
+                </div>
+              </TooltipTrigger>
+              <TooltipContent className="bg-zinc-900 border-zinc-800 text-zinc-200 text-[10px]">
+                Última atualização feita por {venda.statusPedidoUserNome} em {venda.statusPedidoEm ? new Date(venda.statusPedidoEm).toLocaleString("pt-BR") : "—"}.
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
+        {!canEdit && (
+          <TooltipProvider delayDuration={150}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Info className="size-3 text-muted-foreground/50 cursor-help" />
+              </TooltipTrigger>
+              <TooltipContent className="bg-zinc-900 border-zinc-800 text-zinc-200 text-[11px] max-w-[200px]">
+                Campo operacional bloqueado. Somente BKO, Gestor autorizado ou Administrador podem editar esta data.
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
+      </div>
+      <div className="flex items-center gap-1">
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!canEdit}
+              className={cn(
+                "h-7 px-2 text-xs font-medium justify-start min-w-[120px]",
+                !date && "text-muted-foreground",
+                !canEdit && "opacity-80 cursor-not-allowed border-dashed bg-muted/20"
+              )}
+            >
+              <Calendar className="size-3 mr-1.5" />
+              {date ? date.toLocaleDateString("pt-BR") : "—"}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-auto p-0" align="end">
+            <CalendarPicker
+              mode="single"
+              selected={date}
+              onSelect={(d) => {
+                if (!d) return;
+                if (minDate && d < minDate) {
+                  toast.error("Data inválida", { description: `Deve ser ≥ ${minDate.toLocaleDateString("pt-BR")}` });
+                  return;
+                }
+                if (maxDate && d > maxDate) {
+                  toast.error("Data inválida", { description: `Deve ser ≤ ${maxDate.toLocaleDateString("pt-BR")}` });
+                  return;
+                }
+                setOpen(false);
+                void onSave(toISO(d));
+              }}
+              disabled={(d) =>
+                (minDate ? d < minDate : false) || (maxDate ? d > maxDate : false)
+              }
+              initialFocus
+              className={cn("p-3 pointer-events-auto")}
+            />
+          </PopoverContent>
+        </Popover>
+        {canEdit && date && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+            onClick={() => void onSave(null)}
+            title="Limpar data"
+          >
+            <X className="size-3" />
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface HistoricoDatasItem {
+  created_at: string;
+  campo: string | null;
+  valor_anterior: string | null;
+  valor_novo: string | null;
+  user_nome: string | null;
+}
+
+const DATA_LABELS: Record<string, string> = {
+  data_recebimento: "Recebimento",
+  data_preenchimento: "Preenchimento",
+  data_envio: "Envio",
+  data_aceite: "Aceite",
+  data_input: "Input",
+  data_ativacao: "Ativação",
+  data_portabilidade: "Portabilidade",
+  data_entrega: "Entrega/Instalação",
+};
+
+function fmtDataLog(s: string | null): string {
+  if (!s || s === "—") return "—";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (!m) return s;
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+function buildHistoricoDatas(historico: HistoricoDatasItem[]): string {
+  if (!historico || historico.length === 0) return "Nenhuma alteração registrada.";
+  return historico.slice(0, 20).map(h => {
+    const quando = new Date(h.created_at).toLocaleString("pt-BR");
+    const label = DATA_LABELS[h.campo ?? ""] ?? h.campo ?? "—";
+    const ant = fmtDataLog(h.valor_anterior);
+    const nov = fmtDataLog(h.valor_novo);
+    const user = h.user_nome ?? "Sistema";
+    return `• ${quando} — ${user} alterou ${label}: ${ant} → ${nov}`;
+  }).join("\n");
+}
+
+function buildNota(
+  v: any, c: any, consultor: string | undefined, etapa: string,
+  historicoDatas: HistoricoDatasItem[] = [],
+) {
+  return `╔══════════════════════════════════════════════╗
+║  OMNI FLOW LAB — NOTA DO PEDIDO              ║
+╠══════════════════════════════════════════════╣
+
+PEDIDO: ${v.numero}
+OPERADORA: ${v.operadora}
+TIPO: ${v.tipoPedido}
+PRODUTO: ${v.produto}
+ETAPA ATUAL: ${etapa}
+
+─── CLIENTE ───────────────────────────────────
+Razão Social: ${c.razaoSocial}
+CNPJ: ${c.cnpj}
+Contato: ${c.contato}
+Telefone: ${c.telefone}
+UF/DDD: ${c.uf} · ${c.ddd}
+
+─── DADOS COMERCIAIS ──────────────────────────
+Quantidade de linhas: ${v.quantidadeLinhas}
+Receita: ${brl(v.receita)}
+Consultor: ${consultor ?? "—"}
+Mês ref.: ${String(v.mesRef).padStart(2, "0")}/${v.anoRef}
+
+─── OPERACIONAL ───────────────────────────────
+Status: ${v.status}
+SLA: ${v.slaStatus.toUpperCase()}
+Recebimento: ${fmtDataLog(v.dataRecebimento)}
+Preenchimento: ${fmtDataLog(v.dataPreenchimento)}
+Envio: ${fmtDataLog(v.dataEnvio)}
+Aceite: ${fmtDataLog(v.dataAceite)}
+Input: ${fmtDataLog(v.dataInput)}
+Última alteração: ${v.atualizadoEm ? `${new Date(v.atualizadoEm).toLocaleString("pt-BR")} · ${v.statusPedidoUserNome || "Sistema"}` : "—"}
+Data da ativação: ${fmtDataLog(v.dataAtivacao)}
+Data portabilidade: ${fmtDataLog(v.dataPortabilidade)}
+Data entrega/Instalação: ${fmtDataLog(v.dataEntrega)}
+Próxima ação: ${v.proximaAcao} em ${fmtDataLog(v.proximaAcaoData)}
+${v.observacao ? `\nObservação: ${v.observacao}` : ""}
+
+Histórico de Datas:
+${buildHistoricoDatas(historicoDatas)}
+
+╚══════════════════════════════════════════════╝
+Gerado por OMNI Flow Lab · pipeline inteligente`;
+}
+
+function Secao({ titulo, children }: { titulo: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-2">{titulo}</div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{children}</div>
+    </div>
+  );
+}
+
+function Campo({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <Label className="text-[11px] text-muted-foreground">{label}</Label>
+      {children}
+    </div>
+  );
+}
+
+interface NotaVersaoRow {
+  id: string;
+  tipo: "auto" | "manual" | "snapshot";
+  conteudo: string;
+  user_nome: string | null;
+  created_at: string;
+}
+
+function NotaPedidoTab({
+  venda, cliente, consultorNome, etapaNome, podeEditar, onPdf, onPreviewPdf,
+  updateVenda, userId, userNome, historicoDatas = [],
+}: {
+  venda: any; cliente: any; consultorNome?: string; etapaNome: string;
+  podeEditar: boolean;
+  onPdf: () => void; onPreviewPdf: () => void;
+  updateVenda: (id: string, patch: Record<string, unknown>) => Promise<boolean>;
+  userId: string | null; userNome: string | null;
+  historicoDatas?: HistoricoDatasItem[];
+}) {
+  const notaAuto = useMemo(
+    () => buildNota(venda, cliente, consultorNome, etapaNome, historicoDatas),
+    [venda, cliente, consultorNome, etapaNome, historicoDatas],
+  );
+  const modoAtual: "auto" | "manual" = venda.notaModo ?? "auto";
+  const textoSalvo = modoAtual === "manual" ? (venda.notaManual ?? notaAuto) : notaAuto;
+
+  const [editando, setEditando] = useState(false);
+  const [rascunho, setRascunho] = useState(textoSalvo);
+  const [salvando, setSalvando] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [versoes, setVersoes] = useState<NotaVersaoRow[]>([]);
+
+  useEffect(() => {
+    if (!editando) setRascunho(textoSalvo);
+  }, [textoSalvo, editando]);
+
+  const carregarVersoes = useCallback(async () => {
+    const { data } = await supabase
+      .from("venda_nota_versoes")
+      .select("id, tipo, conteudo, user_nome, created_at")
+      .eq("venda_id", venda.id)
+      .order("created_at", { ascending: false })
+      .limit(20);
+    setVersoes((data ?? []) as NotaVersaoRow[]);
+  }, [venda.id]);
+
+  useEffect(() => { carregarVersoes(); }, [carregarVersoes]);
+
+  async function snapshot(tipo: "auto" | "manual" | "snapshot", conteudo: string) {
+    await supabase.from("venda_nota_versoes").insert({
+      venda_id: venda.id, tipo, conteudo,
+      user_id: userId, user_nome: userNome,
+    });
+  }
+
+  async function salvarManual() {
+    setSalvando(true);
+    const ok = await updateVenda(venda.id, {
+      nota_modo: "manual",
+      nota_manual: rascunho,
+      nota_atualizada_em: new Date().toISOString(),
+      nota_atualizada_por: userId,
+    });
+    if (ok) {
+      await snapshot("manual", rascunho);
+      await carregarVersoes();
+      setEditando(false);
+    }
+    setSalvando(false);
+  }
+
+  async function restaurarAuto() {
+    setSalvando(true);
+    if (modoAtual === "manual" && venda.notaManual) {
+      await snapshot("snapshot", venda.notaManual);
+    }
+    const ok = await updateVenda(venda.id, {
+      nota_modo: "auto",
+      nota_manual: null,
+      nota_atualizada_em: new Date().toISOString(),
+      nota_atualizada_por: userId,
+    });
+    if (ok) {
+      await snapshot("auto", notaAuto);
+      await carregarVersoes();
+      setEditando(false);
+      setRascunho(notaAuto);
+    }
+    setSalvando(false);
+  }
+
+  async function regenerarAuto() {
+    setSalvando(true);
+    await snapshot("auto", notaAuto);
+    if (modoAtual === "manual") {
+      const ok = await updateVenda(venda.id, {
+        nota_modo: "auto",
+        nota_manual: null,
+        nota_atualizada_em: new Date().toISOString(),
+        nota_atualizada_por: userId,
+      });
+      if (ok) {
+        setEditando(false);
+        setRascunho(notaAuto);
+      }
+    } else {
+      setRascunho(notaAuto);
+      toast.success("Nota automática regenerada");
+    }
+    await carregarVersoes();
+    setSalvando(false);
+  }
+
+  function copiar() {
+    const t = editando ? rascunho : textoSalvo;
+    navigator.clipboard.writeText(t);
+    toast.success("Nota copiada");
+  }
+
+  async function restaurarVersao(v: NotaVersaoRow) {
+    setSalvando(true);
+    const ok = await updateVenda(venda.id, {
+      nota_modo: "manual",
+      nota_manual: v.conteudo,
+      nota_atualizada_em: new Date().toISOString(),
+      nota_atualizada_por: userId,
+    });
+    if (ok) {
+      await snapshot("snapshot", v.conteudo);
+      await carregarVersoes();
+      setEditando(false);
+      toast.success("Versão restaurada como nota manual");
+    }
+    setSalvando(false);
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-border bg-card p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <h3 className="font-display font-semibold flex items-center gap-2">
+            <FileText className="size-4 text-omni" /> Nota do Pedido
+            <Badge variant="outline" className={cn(
+              "ml-2 text-[9px] uppercase tracking-wider",
+              modoAtual === "manual" ? "border-purple/40 text-purple" : "border-omni/40 text-omni"
+            )}>
+              {modoAtual === "manual" ? "Manual" : "Automática"}
+            </Badge>
+          </h3>
+          <div className="flex flex-wrap gap-2">
+            {!editando && podeEditar && (
+              <Button size="sm" variant="outline" className="gap-2" onClick={() => { setRascunho(textoSalvo); setEditando(true); }}>
+                <Pencil className="size-3.5" /> Editar
+              </Button>
+            )}
+            {editando && (
+              <>
+                <Button size="sm" variant="outline" className="gap-2" onClick={() => { setEditando(false); setRascunho(textoSalvo); }} disabled={salvando}>
+                  <X className="size-3.5" /> Cancelar
+                </Button>
+                <Button size="sm" className="bg-[var(--omni)] text-black hover:bg-[var(--omni-glow)] font-semibold gap-2" onClick={salvarManual} disabled={salvando}>
+                  <Save className="size-3.5" /> {salvando ? "Salvando…" : "Salvar"}
+                </Button>
+              </>
+            )}
+            {podeEditar && (
+              <Button size="sm" variant="outline" className="gap-2" onClick={regenerarAuto} disabled={salvando}>
+                <RefreshCw className="size-3.5" /> Regenerar automática
+              </Button>
+            )}
+            {modoAtual === "manual" && podeEditar && (
+              <Button size="sm" variant="outline" className="gap-2" onClick={restaurarAuto} disabled={salvando}>
+                <Undo2 className="size-3.5" /> Restaurar automática
+              </Button>
+            )}
+            <Button size="sm" variant="outline" className="gap-2" onClick={copiar}>
+              <Copy className="size-3.5" /> Copiar
+            </Button>
+            <Button size="sm" variant="outline" className="gap-2" onClick={() => setPreviewOpen(true)}>
+              <Eye className="size-3.5" /> Pré-visualizar
+            </Button>
+            <Button size="sm" variant="outline" className="gap-2" onClick={onPreviewPdf}>
+              <Printer className="size-3.5" /> PDF preview
+            </Button>
+            <Button size="sm" className="bg-[var(--omni)] text-black hover:bg-[var(--omni-glow)] font-semibold gap-2" onClick={onPdf}>
+              <Download className="size-3.5" /> Gerar PDF
+            </Button>
+          </div>
+        </div>
+
+        {editando ? (
+          <Textarea
+            rows={22}
+            value={rascunho}
+            onChange={e => setRascunho(e.target.value)}
+            className="font-mono text-xs leading-relaxed"
+          />
+        ) : (
+          <pre className="bg-surface-1 border border-border rounded-lg p-4 text-xs font-mono whitespace-pre-wrap leading-relaxed">
+{textoSalvo}
+          </pre>
+        )}
+
+        {venda.notaAtualizadaEm && (
+          <div className="mt-2 text-[10px] text-muted-foreground">
+            Última alteração: {new Date(venda.notaAtualizadaEm).toLocaleString("pt-BR")}
+          </div>
+        )}
+      </div>
+
+      {versoes.length > 0 && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h4 className="text-sm font-display font-semibold mb-3 flex items-center gap-2">
+            <History className="size-4 text-omni" /> Versões da nota
+          </h4>
+          <div className="space-y-2 max-h-80 overflow-auto pr-1">
+            {versoes.map(v => (
+              <div key={v.id} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface-1 px-3 py-2">
+                <div className="min-w-0">
+                  <div className="text-xs font-mono text-muted-foreground">
+                    {new Date(v.created_at).toLocaleString("pt-BR")} · {v.user_nome ?? "Sistema"} ·{" "}
+                    <span className="uppercase">{v.tipo}</span>
+                  </div>
+                  <div className="text-[11px] truncate text-foreground/80">{v.conteudo.slice(0, 120)}…</div>
+                </div>
+                {podeEditar && (
+                  <Button size="sm" variant="outline" className="gap-1 shrink-0" onClick={() => restaurarVersao(v)} disabled={salvando}>
+                    <Undo2 className="size-3" /> Restaurar
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Eye className="size-4 text-omni" /> Pré-visualização da nota
+            </DialogTitle>
+          </DialogHeader>
+          <pre className="bg-surface-1 border border-border rounded-lg p-4 text-xs font-mono whitespace-pre-wrap leading-relaxed">
+{editando ? rascunho : textoSalvo}
+          </pre>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+interface VendaLinhaRow {
+  id: string;
+  venda_id: string;
+  numero: string | null;
+  ddd: string | null;
+  plano: string | null;
+  produto: string | null;
+  valor_mensal: number;
+  status: "ativa" | "renovada" | "cancelada" | "portada" | "concluida";
+  data_ativacao: string | null;
+  iccid: string | null;
+  observacao: string | null;
+  ordem: number;
+}
+
+const STATUS_LINHA: { value: VendaLinhaRow["status"]; label: string }[] = [
+  { value: "ativa", label: "Ativa" },
+  { value: "renovada", label: "Renovada" },
+  { value: "portada", label: "Portada" },
+  { value: "concluida", label: "Concluída" },
+  { value: "cancelada", label: "Cancelada" },
+];
+
+function LinhasTab({
+  vendaId, operadora, tipoPedido, produtoPadrao, dddPadrao,
+  receitaVenda, qtdVenda, podeEditar, userId, reloadVenda,
+}: {
+  vendaId: string;
+  operadora: string;
+  tipoPedido: string;
+  produtoPadrao: string;
+  dddPadrao: string;
+  receitaVenda: number;
+  qtdVenda: number;
+  podeEditar: boolean;
+  userId: string | null;
+  reloadVenda: () => Promise<void>;
+}) {
+  const [linhas, setLinhas] = useState<VendaLinhaRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const carregar = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase
+      .from("venda_linhas")
+      .select("*")
+      .eq("venda_id", vendaId)
+      .order("ordem", { ascending: true })
+      .order("created_at", { ascending: true });
+    setLinhas((data ?? []) as VendaLinhaRow[]);
+    setLoading(false);
+  }, [vendaId]);
+
+  useEffect(() => { carregar(); }, [carregar]);
+
+  const totais = useMemo(() => {
+    const ativas = linhas.filter(l => l.status !== "cancelada");
+    const receita = ativas.reduce((s, l) => s + Number(l.valor_mensal || 0), 0);
+    const qtd = ativas.length;
+    const ticket = qtd > 0 ? receita / qtd : 0;
+    return { receita, qtd, ticket };
+  }, [linhas]);
+
+  const diferencaReceita = totais.receita - receitaVenda;
+  const diferencaQtd = totais.qtd - qtdVenda;
+
+  async function afterChange() {
+    await carregar();
+    await reloadVenda();
+  }
+
+  async function adicionar() {
+    setBusy(true);
+    const ordem = linhas.length;
+    const { error } = await supabase.from("venda_linhas").insert({
+      venda_id: vendaId,
+      numero: "",
+      ddd: dddPadrao || "",
+      plano: `Plano ${operadora} ${produtoPadrao}`,
+      produto: produtoPadrao,
+      valor_mensal: 0,
+      status: "ativa",
+      ordem,
+      created_by: userId,
+    });
+    setBusy(false);
+    if (error) { toast.error("Falha ao adicionar linha", { description: error.message }); return; }
+    toast.success("Linha adicionada");
+    await afterChange();
+  }
+
+  async function duplicar(l: VendaLinhaRow) {
+    setBusy(true);
+    const novo = {
+      venda_id: l.venda_id,
+      numero: l.numero,
+      ddd: l.ddd,
+      plano: l.plano,
+      produto: l.produto,
+      valor_mensal: l.valor_mensal,
+      status: l.status,
+      data_ativacao: l.data_ativacao,
+      iccid: l.iccid,
+      observacao: l.observacao,
+      ordem: (l.ordem ?? 0) + 1,
+      created_by: userId,
+    };
+    const { error } = await supabase.from("venda_linhas").insert(novo);
+    setBusy(false);
+    if (error) { toast.error("Falha ao duplicar", { description: error.message }); return; }
+    toast.success("Linha duplicada");
+    await afterChange();
+  }
+
+  async function excluir(id: string) {
+    if (!confirm("Excluir esta linha?")) return;
+    setBusy(true);
+    const { error } = await supabase.from("venda_linhas").delete().eq("id", id);
+    setBusy(false);
+    if (error) { toast.error("Falha ao excluir", { description: error.message }); return; }
+    toast.success("Linha excluída");
+    await afterChange();
+  }
+
+  async function patch(id: string, p: Partial<VendaLinhaRow>) {
+    setLinhas(curr => curr.map(l => l.id === id ? { ...l, ...p } as VendaLinhaRow : l));
+    const { error } = await (supabase.from("venda_linhas") as any).update(p).eq("id", id);
+    if (error) {
+      toast.error("Falha ao salvar", { description: error.message });
+      await carregar();
+      return;
+    }
+    await reloadVenda();
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <KpiLinha label="Receita das linhas" value={brl(totais.receita)} tone="success" />
+        <KpiLinha label="Qtd ativa" value={String(totais.qtd)} tone="info" />
+        <KpiLinha label="Ticket médio" value={brl(totais.ticket)} tone="omni" />
+        <KpiLinha
+          label="Diferença vs venda"
+          value={`${diferencaReceita >= 0 ? "+" : ""}${brl(diferencaReceita)} · ${diferencaQtd >= 0 ? "+" : ""}${diferencaQtd}`}
+          tone={Math.abs(diferencaReceita) < 0.01 && diferencaQtd === 0 ? "success" : "warning"}
+        />
+      </div>
+
+      <div className="rounded-xl border border-border bg-card overflow-hidden">
+        <div className="flex items-center justify-between p-3 border-b border-border">
+          <div className="text-xs text-muted-foreground">
+            {loading ? "Carregando…" : `${linhas.length} linha(s)`}
+          </div>
+          {podeEditar && (
+            <Button size="sm" className="gap-2 bg-[var(--omni)] text-black hover:bg-[var(--omni-glow)]" onClick={adicionar} disabled={busy}>
+              <Plus className="size-3.5" /> Adicionar linha
+            </Button>
+          )}
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs min-w-[1100px]">
+            <thead className="bg-surface-1 text-muted-foreground uppercase tracking-wider text-[10px]">
+              <tr>
+                <th className="text-left px-3 py-2">Número</th>
+                <th className="text-left px-3 py-2 w-16">DDD</th>
+                <th className="text-left px-3 py-2">Produto</th>
+                <th className="text-left px-3 py-2">Plano</th>
+                <th className="text-right px-3 py-2 w-28">Valor (R$)</th>
+                <th className="text-left px-3 py-2 w-36">Status</th>
+                <th className="text-left px-3 py-2 w-36">Ativação</th>
+                <th className="text-left px-3 py-2">ICCID</th>
+                <th className="text-left px-3 py-2">Obs.</th>
+                <th className="px-3 py-2 w-24"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {linhas.map(l => (
+                <tr key={l.id} className={cn(
+                  "border-t border-border hover:bg-surface-1",
+                  l.status === "cancelada" && "opacity-60",
+                )}>
+                  <td className="px-2 py-1">
+                    <Input value={l.numero ?? ""} disabled={!podeEditar}
+                      className="h-8 text-xs font-mono"
+                      onChange={e => setLinhas(curr => curr.map(x => x.id === l.id ? { ...x, numero: e.target.value } : x))}
+                      onBlur={e => patch(l.id, { numero: e.target.value })} />
+                  </td>
+                  <td className="px-2 py-1">
+                    <Input value={l.ddd ?? ""} disabled={!podeEditar}
+                      className="h-8 text-xs"
+                      onChange={e => setLinhas(curr => curr.map(x => x.id === l.id ? { ...x, ddd: e.target.value } : x))}
+                      onBlur={e => patch(l.id, { ddd: e.target.value })} />
+                  </td>
+                  <td className="px-2 py-1">
+                    <Input value={l.produto ?? ""} disabled={!podeEditar}
+                      className="h-8 text-xs"
+                      onChange={e => setLinhas(curr => curr.map(x => x.id === l.id ? { ...x, produto: e.target.value } : x))}
+                      onBlur={e => patch(l.id, { produto: e.target.value })} />
+                  </td>
+                  <td className="px-2 py-1">
+                    <Input value={l.plano ?? ""} disabled={!podeEditar}
+                      className="h-8 text-xs"
+                      onChange={e => setLinhas(curr => curr.map(x => x.id === l.id ? { ...x, plano: e.target.value } : x))}
+                      onBlur={e => patch(l.id, { plano: e.target.value })} />
+                  </td>
+                  <td className="px-2 py-1">
+                    <Input type="number" step="0.01" value={String(l.valor_mensal ?? 0)} disabled={!podeEditar}
+                      className="h-8 text-xs font-mono text-right"
+                      onChange={e => setLinhas(curr => curr.map(x => x.id === l.id ? { ...x, valor_mensal: Number(e.target.value) } : x))}
+                      onBlur={e => patch(l.id, { valor_mensal: Number(e.target.value) || 0 })} />
+                  </td>
+                  <td className="px-2 py-1">
+                    <Select value={l.status} disabled={!podeEditar}
+                      onValueChange={(v) => patch(l.id, { status: v as VendaLinhaRow["status"] })}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {STATUS_LINHA.map(s => (
+                          <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </td>
+                  <td className="px-2 py-1">
+                    <Input type="date" value={l.data_ativacao ?? ""} disabled={!podeEditar}
+                      className="h-8 text-xs"
+                      onChange={e => setLinhas(curr => curr.map(x => x.id === l.id ? { ...x, data_ativacao: e.target.value || null } : x))}
+                      onBlur={e => patch(l.id, { data_ativacao: e.target.value || null })} />
+                  </td>
+                  <td className="px-2 py-1">
+                    <Input value={l.iccid ?? ""} disabled={!podeEditar}
+                      className="h-8 text-xs font-mono"
+                      onChange={e => setLinhas(curr => curr.map(x => x.id === l.id ? { ...x, iccid: e.target.value } : x))}
+                      onBlur={e => patch(l.id, { iccid: e.target.value })} />
+                  </td>
+                  <td className="px-2 py-1">
+                    <Input value={l.observacao ?? ""} disabled={!podeEditar}
+                      className="h-8 text-xs"
+                      onChange={e => setLinhas(curr => curr.map(x => x.id === l.id ? { ...x, observacao: e.target.value } : x))}
+                      onBlur={e => patch(l.id, { observacao: e.target.value })} />
+                  </td>
+                  <td className="px-2 py-1">
+                    <div className="flex gap-1 justify-end">
+                      {podeEditar && (
+                        <>
+                          <Button size="icon" variant="ghost" className="size-7" onClick={() => duplicar(l)} disabled={busy} title="Duplicar">
+                            <CopyPlus className="size-3.5" />
+                          </Button>
+                          <Button size="icon" variant="ghost" className="size-7 text-destructive hover:bg-destructive/10" onClick={() => excluir(l.id)} disabled={busy} title="Excluir">
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!loading && linhas.length === 0 && (
+                <tr>
+                  <td colSpan={10} className="px-3 py-8 text-center text-xs text-muted-foreground">
+                    Nenhuma linha cadastrada. {podeEditar ? "Clique em \"Adicionar linha\" para começar." : ""}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <p className="text-[10px] text-muted-foreground">
+        Tipo de pedido vigente: <span className="font-semibold">{tipoPedido}</span>. Linhas
+        canceladas não somam na receita nem na quantidade. Os totais, o card do pipeline e os
+        dashboards são atualizados automaticamente após cada alteração.
+      </p>
+    </div>
+  );
+}
+
+function KpiLinha({ label, value, tone }: { label: string; value: string; tone: string }) {
+  return (
+    <div className="rounded-xl border border-border bg-card p-3">
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{label}</div>
+      <div className={cn("font-display text-lg font-bold leading-tight", `text-[var(--${tone})]`)}>{value}</div>
+    </div>
+  );
+}
+
+
+
+// ============ Tempos por etapa (derivado de venda_historico) ============
+interface HistoricoEtapaEvento {
+  id: string; created_at: string; tipo: string; campo: string | null;
+  valor_anterior: string | null; valor_novo: string | null;
+}
+function fmtDuracao(ms: number): string {
+  if (ms <= 0) return "0min";
+  const min = Math.floor(ms / 60000);
+  const dias = Math.floor(min / (60 * 24));
+  const horas = Math.floor((min % (60 * 24)) / 60);
+  const mins = min % 60;
+  if (dias > 0) return `${dias}d ${horas}h`;
+  if (horas > 0) return `${horas}h ${mins}min`;
+  return `${mins}min`;
+}
+function TemposPorEtapa({ historico, etapaAtual, createdAt }: {
+  historico: HistoricoEtapaEvento[]; etapaAtual: string; createdAt: string;
+}) {
+  const dados = useMemo(() => {
+    const eventos = historico
+      .filter(h => h.tipo === "etapa" || h.campo === "etapa_id")
+      .slice()
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+    const startMs = new Date(createdAt).getTime();
+    const nowMs = Date.now();
+    const segmentos: { etapaId: string; inicio: number; fim: number }[] = [];
+
+    let etapaCorrente =
+      eventos[0]?.valor_anterior && ETAPAS.some(e => e.id === eventos[0].valor_anterior)
+        ? eventos[0].valor_anterior!
+        : etapaAtual;
+    let tCorrente = startMs;
+
+    for (const ev of eventos) {
+      const tEv = new Date(ev.created_at).getTime();
+      segmentos.push({ etapaId: etapaCorrente, inicio: tCorrente, fim: tEv });
+      etapaCorrente = ev.valor_novo ?? etapaCorrente;
+      tCorrente = tEv;
+    }
+    segmentos.push({ etapaId: etapaCorrente, inicio: tCorrente, fim: nowMs });
+
+    const totais = new Map<string, { total: number; visitas: number }>();
+    for (const s of segmentos) {
+      const dur = Math.max(0, s.fim - s.inicio);
+      const prev = totais.get(s.etapaId) ?? { total: 0, visitas: 0 };
+      totais.set(s.etapaId, { total: prev.total + dur, visitas: prev.visitas + 1 });
+    }
+
+    const linhas = Array.from(totais.entries()).map(([etapaId, v]) => {
+      const etapa = ETAPAS.find(e => e.id === etapaId);
+      return {
+        etapaId,
+        nome: etapa?.nome ?? etapaId,
+        cor: etapa?.cor ?? "muted-foreground",
+        funil: etapa?.funil ?? "—",
+        total: v.total,
+        visitas: v.visitas,
+      };
+    }).sort((a, b) => b.total - a.total);
+
+    const totalGlobal = Math.max(0, nowMs - startMs);
+    return { linhas, totalGlobal, etapaAtualId: etapaCorrente };
+  }, [historico, etapaAtual, createdAt]);
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4">
+      <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Clock className="size-4 text-omni" />
+          <h3 className="font-display font-semibold">Tempos por etapa</h3>
+        </div>
+        <div className="text-xs text-muted-foreground">
+          Tempo total no pipeline: <span className="font-semibold text-foreground font-mono">{fmtDuracao(dados.totalGlobal)}</span>
+        </div>
+      </div>
+      {dados.linhas.length === 0 ? (
+        <div className="text-xs text-muted-foreground italic">Sem histórico de etapas ainda.</div>
+      ) : (
+        <div className="space-y-2">
+          {dados.linhas.map(l => {
+            const pct = dados.totalGlobal > 0 ? (l.total / dados.totalGlobal) * 100 : 0;
+            const atual = l.etapaId === dados.etapaAtualId;
+            return (
+              <div key={l.etapaId} className="space-y-1">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className={cn("size-2 rounded-full shrink-0", `bg-[var(--${l.cor})]`)} />
+                    <span className="font-medium truncate">{l.nome}</span>
+                    {atual && (
+                      <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-omni/40 text-omni">atual</Badge>
+                    )}
+                    <span className="text-[10px] text-muted-foreground">
+                      {l.visitas}× · {l.funil}
+                    </span>
+                  </div>
+                  <span className="font-mono text-xs tabular-nums shrink-0">{fmtDuracao(l.total)}</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-surface-2 overflow-hidden">
+                  <div className={cn("h-full rounded-full", `bg-[var(--${l.cor})]`)}
+                    style={{ width: `${Math.min(100, pct)}%` }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}

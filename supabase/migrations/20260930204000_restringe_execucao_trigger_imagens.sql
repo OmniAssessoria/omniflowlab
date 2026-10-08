@@ -1,0 +1,1 @@
+revoke all on function public.proteger_imagens_observacao_bko() from public, anon, authenticated;

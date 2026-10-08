@@ -1,0 +1,2 @@
+create index if not exists idx_venda_status_comercial_historico_user_id
+on public.venda_status_comercial_historico(user_id);

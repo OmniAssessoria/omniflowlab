@@ -1,0 +1,1 @@
+REVOKE ALL ON FUNCTION public.auto_ticket_on_prd_suporte() FROM PUBLIC, anon, authenticated;
